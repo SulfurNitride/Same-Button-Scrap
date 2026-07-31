@@ -149,5 +149,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ScrapWithSameButton-FOMOD
-          path: build/windows-ci/ScrapWithSameButton-*-FOMOD.zip
+          path: ${{ runner.temp }}/swsb-package
           if-no-files-found: error
