@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fomod>
+  <Name>Scrap With Same Button</Name>
+  <Author>Scrap With Same Button contributors</Author>
+  <Version>@PROJECT_VERSION@</Version>
+  <Description>Press the scrap button a second time to confirm scrapping.</Description>
+  <Groups>
+    <element>Utilities</element>
+  </Groups>
+</fomod>

@@ -1,0 +1,21 @@
+Scrap With Same Button uses the following third-party projects:
+
+CommonLibF4
+Copyright its contributors
+GPL-3.0-or-later with Modding Exception and GPL-3.0 Linking Exception
+https://github.com/libxse/commonlibf4
+
+CommonLib Shared
+Copyright its contributors
+GPL-3.0-or-later with Modding Exception and GPL-3.0 Linking Exception
+https://github.com/libxse/commonlib-shared
+
+MinHook
+Copyright Tsuda Kageyu and contributors
+BSD 2-Clause License
+https://github.com/TsudaKageyu/minhook
+
+spdlog
+Copyright Gabi Melman and contributors
+MIT License
+https://github.com/gabime/spdlog

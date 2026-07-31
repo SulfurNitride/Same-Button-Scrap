@@ -1,0 +1,121 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COMMONLIBF4_COMMIT: d68bc6b24841fd02273dd90d268370f0a326bec5
+  VCPKG_COMMIT: cc288af760054fa489574bd8e22d05aa8fa01e5c
+  VCPKG_FEATURE_FLAGS: manifests,binarycaching
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out pinned CommonLibF4
+        uses: actions/checkout@v4
+        with:
+          repository: libxse/commonlibf4
+          ref: ${{ env.COMMONLIBF4_COMMIT }}
+          path: extern/CommonLibF4
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out pinned vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          git -C vcpkg checkout $env:VCPKG_COMMIT
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-binary-cache
+          key: swsb-vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/x64-windows-static-md.cmake') }}
+          restore-keys: |
+            swsb-vcpkg-${{ runner.os }}-
+
+      - name: Configure
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}\vcpkg-binary-cache,readwrite
+        run: |
+          New-Item -ItemType Directory -Force `
+            -Path "${{ runner.temp }}\vcpkg-binary-cache" | Out-Null
+          cmake -S . -B build\windows-ci `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_APPLOCAL_DEPS=OFF `
+            -DVCPKG_OVERLAY_PORTS="$env:GITHUB_WORKSPACE\cmake\ports" `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\cmake\triplets" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+
+      - name: Build FOMOD
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}\vcpkg-binary-cache,readwrite
+        run: |
+          cmake --build build\windows-ci `
+            --config Release `
+            --target package_mod `
+            --parallel
+
+      - name: Validate FOMOD
+        shell: pwsh
+        run: |
+          $archives = @(
+            Get-ChildItem `
+              -Path "build\windows-ci" `
+              -Filter "ScrapWithSameButton-*-FOMOD.zip"
+          )
+          if ($archives.Count -ne 1) {
+            throw "Expected one FOMOD archive, found $($archives.Count)"
+          }
+
+          $expanded = Join-Path $env:RUNNER_TEMP "swsb-package"
+          Expand-Archive `
+            -Path $archives[0].FullName `
+            -DestinationPath $expanded
+
+          $required = @(
+            "fomod\info.xml",
+            "fomod\ModuleConfig.xml",
+            "common\README.md",
+            "common\LICENSE",
+            "common\THIRD_PARTY_NOTICES.txt",
+            "runtime\OG\F4SE\Plugins\ScrapWithSameButton.dll",
+            "runtime\NG\F4SE\Plugins\ScrapWithSameButton.dll",
+            "runtime\AE\F4SE\Plugins\ScrapWithSameButton.dll"
+          )
+
+          foreach ($relativePath in $required) {
+            $path = Join-Path $expanded $relativePath
+            if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Missing required package file: $relativePath"
+            }
+          }
+
+          [xml](Get-Content (Join-Path $expanded "fomod\info.xml")) |
+            Out-Null
+          [xml](Get-Content (Join-Path $expanded "fomod\ModuleConfig.xml")) |
+            Out-Null
+
+      - name: Upload FOMOD
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScrapWithSameButton-FOMOD
+          path: build/windows-ci/ScrapWithSameButton-*-FOMOD.zip
+          if-no-files-found: error
