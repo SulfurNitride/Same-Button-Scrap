@@ -25,6 +25,30 @@ namespace
     std::atomic<bool> workbenchScrapConfirmation{ false };
     std::atomic<bool> acceptReleasePending{ false };
 
+    REL::ID RuntimeID(
+        const std::uint64_t og,
+        const std::uint64_t ng,
+        const std::uint64_t ae)
+    {
+        const auto runtime =
+            REX::FModule::GetExecutingModule().GetFileVersion();
+        if (runtime < F4SE::RUNTIME_1_10_980) {
+            return REL::ID{ og };
+        }
+        if (runtime < F4SE::RUNTIME_1_11_137) {
+            return REL::ID{ ng };
+        }
+        return REL::ID{ ae };
+    }
+
+    RE::ControlMap* GetControlMap()
+    {
+        static REL::Relocation<RE::ControlMap**> singleton{
+            RuntimeID(325206, 2692014, 4799307)
+        };
+        return *singleton;
+    }
+
     bool IsMenuOpen(const RE::IMenu* menu)
     {
         return menu && menu->OnStack();
@@ -45,7 +69,7 @@ namespace
             return false;
         }
 
-        const auto* controlMap = RE::ControlMap::GetSingleton();
+        const auto* controlMap = GetControlMap();
         if (!controlMap) {
             return false;
         }
@@ -229,7 +253,7 @@ namespace
     bool InstallShowConfirmHook()
     {
         REL::Relocation<std::uintptr_t> target{
-            RE::ID::ExamineMenu::ShowConfirmMenu
+            RuntimeID(443081, 2223081, 2223081)
         };
         showConfirmTarget = reinterpret_cast<void*>(target.address());
         if (MH_CreateHook(
