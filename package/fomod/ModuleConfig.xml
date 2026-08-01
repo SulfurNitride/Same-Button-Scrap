@@ -41,5 +41,49 @@
         </group>
       </optionalFileGroups>
     </installStep>
+    <installStep name="Choose scrap behavior">
+      <optionalFileGroups order="Explicit">
+        <group name="Confirmation and material notification" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Same-button confirmation">
+              <description>Recommended. Keep the scrap confirmation and press the scrap button again to accept it.</description>
+              <files>
+                <file source="config/SameButton.ini" destination="F4SE/Plugins/ScrapWithSameButton.ini" priority="1" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Same-button confirmation + material summary">
+              <description>Keep the scrap confirmation and show the recovered components through Fallout's native HUD messages.</description>
+              <files>
+                <file source="config/SameButtonNotify.ini" destination="F4SE/Plugins/ScrapWithSameButton.ini" priority="1" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Instant scrap">
+              <description>Dangerous: scrap immediately on the first button press without displaying a confirmation.</description>
+              <files>
+                <file source="config/Instant.ini" destination="F4SE/Plugins/ScrapWithSameButton.ini" priority="1" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Instant scrap + material summary">
+              <description>Dangerous: scrap immediately and show the recovered components through Fallout's native HUD messages.</description>
+              <files>
+                <file source="config/InstantNotify.ini" destination="F4SE/Plugins/ScrapWithSameButton.ini" priority="1" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
   </installSteps>
 </config>

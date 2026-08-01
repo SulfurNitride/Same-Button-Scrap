@@ -7,7 +7,12 @@
 #include <MinHook.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>

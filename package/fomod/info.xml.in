@@ -3,7 +3,7 @@
   <Name>Scrap With Same Button</Name>
   <Author>Scrap With Same Button contributors</Author>
   <Version>@PROJECT_VERSION@</Version>
-  <Description>Press the scrap button a second time to confirm scrapping.</Description>
+  <Description>Confirm with the scrap button, optionally scrap instantly, and report recovered materials.</Description>
   <Groups>
     <element>Utilities</element>
   </Groups>

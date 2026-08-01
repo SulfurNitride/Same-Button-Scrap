@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     ScrapWithSameButton
-    VERSION 0.1.1
+    VERSION 0.1.2
     LANGUAGES CXX RC
 )
 
@@ -112,6 +112,8 @@ endforeach()
 add_library(scrap_with_same_button_core STATIC
     src/Hooks.cpp
     src/Hooks.h
+    src/Settings.cpp
+    src/Settings.h
 )
 target_compile_features(scrap_with_same_button_core PUBLIC cxx_std_23)
 target_include_directories(scrap_with_same_button_core
@@ -166,6 +168,7 @@ add_custom_target(package_mod
     COMMAND "${CMAKE_COMMAND}" -E rm -f "${PACKAGE_ARCHIVE}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${PACKAGE_INSTALLER}/common"
+            "${PACKAGE_INSTALLER}/config"
             "${PACKAGE_INSTALLER}/fomod"
             "${PACKAGE_INSTALLER}/runtime/OG/F4SE/Plugins"
             "${PACKAGE_INSTALLER}/runtime/NG/F4SE/Plugins"
@@ -179,6 +182,9 @@ add_custom_target(package_mod
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
             "${PACKAGE_INSTALLER}/common/THIRD_PARTY_NOTICES.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/package/config"
+            "${PACKAGE_INSTALLER}/config"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_BINARY_DIR}/generated-fomod/info.xml"
             "${PACKAGE_INSTALLER}/fomod/info.xml"
@@ -196,7 +202,7 @@ add_custom_target(package_mod
             "${PACKAGE_INSTALLER}/runtime/AE/F4SE/Plugins/ScrapWithSameButton.dll"
     COMMAND "${CMAKE_COMMAND}" -E chdir "${PACKAGE_INSTALLER}"
             "${CMAKE_COMMAND}" -E tar cf "${PACKAGE_ARCHIVE}" --format=zip --
-            fomod common runtime
+            fomod common config runtime
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     BYPRODUCTS "${PACKAGE_ARCHIVE}"
     DEPENDS

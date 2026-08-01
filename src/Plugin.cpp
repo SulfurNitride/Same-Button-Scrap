@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "Hooks.h"
+#include "Settings.h"
 
 namespace
 {
@@ -61,6 +62,7 @@ F4SE_EXPORT bool F4SEPlugin_Load(const F4SE::LoadInterface* f4se)
         SWSB_VERSION,
         REX::FModule::GetExecutingModule().GetFileVersion().string());
 
+    Settings::Load();
     if (!Hooks::Install()) {
         spdlog::critical("Failed to install scrap confirmation hooks");
         return false;

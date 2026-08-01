@@ -1,12 +1,28 @@
 #include "PCH.h"
 
 #include "Hooks.h"
+#include "Settings.h"
 
 namespace
 {
     constexpr std::size_t kPerformInputProcessingIndex{ 0 };
+    constexpr std::size_t kScrapItemAcceptIndex{ 1 };
+    constexpr std::size_t kConfirmAdvanceMovieIndex{ 4 };
     constexpr std::string_view kScrapButtonEvent{ "XButton" };
-    constexpr std::string_view kAcceptEvent{ "Accept" };
+    constexpr std::string_view kActivateEvent{ "Activate" };
+
+    using ScrapRewards = RE::BSTArray<
+        RE::BSTTuple<RE::TESBoundObject*, std::uint32_t>>;
+    using WorkshopReference = RE::BSPointerHandleSmartPointer<
+        RE::BSPointerHandleManagerInterface<
+            RE::TESObjectREFR,
+            RE::HandleManager>>;
+
+    struct Reward
+    {
+        std::string name;
+        std::uint64_t count{ 0 };
+    };
 
     using InputProcessor = void (*)(
         RE::UI*,
@@ -15,15 +31,36 @@ namespace
         RE::ExamineMenu*,
         RE::ExamineConfirmMenu::InitData*,
         RE::ExamineConfirmMenu::ICallback*);
+    using ScrapItemAcceptHandler = void (*)(RE::ScrapItemCallback*);
+    using ConfirmAdvanceMovieHandler = void (*)(
+        RE::ExamineConfirmMenu*,
+        float,
+        std::uint64_t);
+    using ScrapReferenceHandler = void (*)(
+        const RE::Workshop::ContextData&,
+        WorkshopReference&,
+        ScrapRewards*);
+    using ShowHUDMessageHandler = void (*)(
+        const char*,
+        const char*,
+        bool,
+        bool);
 
     InputProcessor originalInputProcessor{ nullptr };
     ShowConfirmHandler originalShowConfirmMenu{ nullptr };
+    ScrapItemAcceptHandler originalScrapItemAccept{ nullptr };
+    ConfirmAdvanceMovieHandler originalConfirmAdvanceMovie{ nullptr };
+    ScrapReferenceHandler originalScrapReference{ nullptr };
     void* showConfirmTarget{ nullptr };
+    void* scrapReferenceTarget{ nullptr };
     std::atomic<bool> workshopScrapButtonReleased{ true };
+    std::atomic<bool> workshopConfirmOnRelease{ false };
     std::atomic<bool> workshopScrapPending{ false };
     std::atomic<bool> workbenchScrapButtonReleased{ true };
+    std::atomic<bool> workbenchConfirmOnRelease{ false };
     std::atomic<bool> workbenchScrapConfirmation{ false };
-    std::atomic<bool> acceptReleasePending{ false };
+    std::atomic<bool> instantAcceptPending{ false };
+    std::vector<Reward> pendingWorkbenchRewards;
 
     REL::ID RuntimeID(
         const std::uint64_t og,
@@ -47,6 +84,122 @@ namespace
             RuntimeID(325206, 2692014, 4799307)
         };
         return *singleton;
+    }
+
+    bool IsInstantMode()
+    {
+        return Settings::Get().mode == Settings::ScrapMode::kInstant;
+    }
+
+    void ResetScrapState()
+    {
+        workshopScrapButtonReleased.store(true, std::memory_order_release);
+        workshopConfirmOnRelease.store(false, std::memory_order_release);
+        workshopScrapPending.store(false, std::memory_order_release);
+        workbenchScrapButtonReleased.store(true, std::memory_order_release);
+        workbenchConfirmOnRelease.store(false, std::memory_order_release);
+        workbenchScrapConfirmation.store(false, std::memory_order_release);
+        instantAcceptPending.store(false, std::memory_order_release);
+    }
+
+    void InitializeConfirmEvent(RE::ButtonEvent& event)
+    {
+        REX::EMPLACE_VTABLE(&event);
+        event.device = RE::INPUT_DEVICE::kKeyboard;
+        event.eventType = RE::INPUT_EVENT_TYPE::kButton;
+        event.strUserEvent = kActivateEvent;
+        if (const auto* controlMap = GetControlMap()) {
+            event.idCode = static_cast<std::int32_t>(
+                controlMap->GetMappedKey(
+                    kActivateEvent,
+                    RE::INPUT_DEVICE::kKeyboard,
+                    RE::UserEvents::INPUT_CONTEXT_ID::kMainGameplay));
+        }
+        event.disabled = true;
+        event.handled = RE::InputEvent::HANDLED_RESULT::kContinue;
+        event.value = 0.0F;
+        event.heldDownSecs = 0.1F;
+    }
+
+    void ConfirmAdvanceMovie(
+        RE::ExamineConfirmMenu* menu,
+        const float timeDelta,
+        const std::uint64_t time)
+    {
+        const bool instantPending =
+            IsInstantMode() &&
+            instantAcceptPending.load(std::memory_order_acquire);
+        if (instantPending) {
+            menu->menuCanBeVisible = false;
+        }
+
+        originalConfirmAdvanceMovie(menu, timeDelta, time);
+
+        if (!instantPending) {
+            return;
+        }
+
+        instantAcceptPending.store(false, std::memory_order_release);
+        RE::ButtonEvent confirmEvent{};
+        InitializeConfirmEvent(confirmEvent);
+        if (auto* ui = RE::UI::GetSingleton()) {
+            originalInputProcessor(ui, &confirmEvent);
+        }
+        ResetScrapState();
+        spdlog::debug("Accepted hidden instant scrap confirmation");
+    }
+
+    std::vector<Reward> CopyRewards(const ScrapRewards& rewards)
+    {
+        std::vector<Reward> result;
+        for (const auto& [object, count] : rewards) {
+            if (!object || count == 0) {
+                continue;
+            }
+
+            auto name = RE::TESFullName::GetFullName(*object);
+            std::string ownedName{ name };
+            if (ownedName.empty()) {
+                ownedName = std::format(
+                    "Form {:08X}",
+                    object->GetFormID());
+            }
+
+            const auto existing = std::ranges::find(
+                result,
+                ownedName,
+                &Reward::name);
+            if (existing != result.end()) {
+                existing->count += count;
+            } else {
+                result.push_back({ std::move(ownedName), count });
+            }
+        }
+        return result;
+    }
+
+    void ShowMaterialSummary(const std::vector<Reward>& rewards)
+    {
+        if (!Settings::Get().showMaterials || rewards.empty()) {
+            return;
+        }
+
+        std::string message{ "Recovered: " };
+        for (std::size_t index = 0; index < rewards.size(); ++index) {
+            if (index > 0) {
+                message.append(", ");
+            }
+            message.append(std::format(
+                "{} ({})",
+                rewards[index].name,
+                rewards[index].count));
+        }
+
+        static REL::Relocation<ShowHUDMessageHandler> showHUDMessage{
+            RuntimeID(1163005, 2222440, 2222440)
+        };
+        showHUDMessage(message.c_str(), nullptr, false, false);
+        spdlog::debug("{}", message);
     }
 
     bool IsMenuOpen(const RE::IMenu* menu)
@@ -91,6 +244,34 @@ namespace
         return false;
     }
 
+    void ProcessAsConfirm(
+        RE::UI* self,
+        RE::ButtonEvent* event,
+        const RE::InputEvent* queueHead)
+    {
+        const RE::BSFixedString originalUserEvent{ event->strUserEvent };
+        const auto originalIDCode = event->idCode;
+        const auto originalHandled = event->handled;
+        const bool originalDisabled = event->disabled;
+
+        event->strUserEvent = kActivateEvent;
+        if (const auto* controlMap = GetControlMap()) {
+            event->idCode = static_cast<std::int32_t>(
+                controlMap->GetMappedKey(
+                    kActivateEvent,
+                    event->device.get(),
+                    RE::UserEvents::INPUT_CONTEXT_ID::kMainGameplay));
+        }
+        event->disabled = true;
+        event->handled = RE::InputEvent::HANDLED_RESULT::kContinue;
+        originalInputProcessor(self, queueHead);
+
+        event->strUserEvent = originalUserEvent;
+        event->idCode = originalIDCode;
+        event->disabled = originalDisabled;
+        event->handled = originalHandled;
+    }
+
     void UIPerformInputProcessing(
         RE::UI* self,
         const RE::InputEvent* queueHead)
@@ -111,8 +292,9 @@ namespace
         const bool workbenchConfirmation =
             IsMenuOpen(examineConfirmMenu.get()) &&
             workbenchScrapConfirmation.load(std::memory_order_acquire);
-
-        RE::ButtonEvent* remappedEvent{ nullptr };
+        const bool instantMode = IsInstantMode();
+        RE::ButtonEvent* confirmEvent{ nullptr };
+        bool markInstantAccept{ false };
 
         for (auto* input = queueHead; input; input = input->next) {
             const auto* button = input->As<RE::ButtonEvent>();
@@ -120,38 +302,29 @@ namespace
                 continue;
             }
 
-            bool forwardAsAccept{ false };
-            const bool isPendingAcceptRelease =
-                button->QReleased() &&
-                acceptReleasePending.exchange(
-                    false,
-                    std::memory_order_acq_rel);
-
-            if (isPendingAcceptRelease) {
-                forwardAsAccept =
-                    IsMenuOpen(examineConfirmMenu.get());
-                workshopScrapButtonReleased.store(
-                    true,
-                    std::memory_order_release);
-                workbenchScrapButtonReleased.store(
-                    true,
-                    std::memory_order_release);
-                workshopScrapPending.store(
-                    false,
-                    std::memory_order_release);
-                workbenchScrapConfirmation.store(
-                    false,
-                    std::memory_order_release);
-            } else if (workshopConfirmation) {
+            bool forwardAsConfirm{ false };
+            if (workshopConfirmation) {
+                if (instantMode) {
+                    continue;
+                }
                 if (button->QReleased()) {
-                    workshopScrapButtonReleased.store(
-                        true,
-                        std::memory_order_release);
-                } else if (button->QJustPressed()) {
-                    forwardAsAccept =
-                        workshopScrapButtonReleased.exchange(
+                    forwardAsConfirm =
+                        workshopConfirmOnRelease.exchange(
                             false,
                             std::memory_order_acq_rel);
+                    if (!forwardAsConfirm) {
+                        workshopScrapButtonReleased.store(
+                            true,
+                            std::memory_order_release);
+                    }
+                } else if (button->QJustPressed()) {
+                    if (workshopScrapButtonReleased.exchange(
+                            false,
+                            std::memory_order_acq_rel)) {
+                        workshopConfirmOnRelease.store(
+                            true,
+                            std::memory_order_release);
+                    }
                 }
             } else if (workshopOpen) {
                 if (button->QJustPressed()) {
@@ -161,6 +334,7 @@ namespace
                     workshopScrapPending.store(
                         true,
                         std::memory_order_release);
+                    markInstantAccept = instantMode;
                 } else if (button->QReleased()) {
                     workshopScrapButtonReleased.store(
                         true,
@@ -169,22 +343,36 @@ namespace
             }
 
             if (workbenchConfirmation) {
+                if (instantMode) {
+                    continue;
+                }
                 if (button->QReleased()) {
-                    workbenchScrapButtonReleased.store(
-                        true,
-                        std::memory_order_release);
-                } else if (button->QJustPressed()) {
-                    forwardAsAccept =
-                        workbenchScrapButtonReleased.exchange(
+                    const bool workbenchForward =
+                        workbenchConfirmOnRelease.exchange(
                             false,
-                            std::memory_order_acq_rel) ||
-                        forwardAsAccept;
+                            std::memory_order_acq_rel);
+                    forwardAsConfirm =
+                        forwardAsConfirm || workbenchForward;
+                    if (!workbenchForward) {
+                        workbenchScrapButtonReleased.store(
+                            true,
+                            std::memory_order_release);
+                    }
+                } else if (button->QJustPressed()) {
+                    if (workbenchScrapButtonReleased.exchange(
+                            false,
+                            std::memory_order_acq_rel)) {
+                        workbenchConfirmOnRelease.store(
+                            true,
+                            std::memory_order_release);
+                    }
                 }
             } else if (workbenchOpen) {
                 if (button->QJustPressed()) {
                     workbenchScrapButtonReleased.store(
                         false,
                         std::memory_order_release);
+                    markInstantAccept = instantMode;
                 } else if (button->QReleased()) {
                     workbenchScrapButtonReleased.store(
                         true,
@@ -192,31 +380,18 @@ namespace
                 }
             }
 
-            if (forwardAsAccept && !remappedEvent) {
-                remappedEvent = const_cast<RE::ButtonEvent*>(button);
-                if (button->QJustPressed()) {
-                    acceptReleasePending.store(
-                        true,
-                        std::memory_order_release);
-                }
-                spdlog::debug(
-                    "Remapping scrap {} to Accept",
-                    button->QJustPressed() ? "press" : "release");
+            if (forwardAsConfirm && !confirmEvent) {
+                confirmEvent = const_cast<RE::ButtonEvent*>(button);
             }
         }
 
-        if (remappedEvent) {
-            const RE::BSFixedString originalUserEvent{
-                remappedEvent->strUserEvent
-            };
-            const bool originalDisabled = remappedEvent->disabled;
-            remappedEvent->strUserEvent = kAcceptEvent;
-            remappedEvent->disabled = false;
+        if (markInstantAccept) {
+            instantAcceptPending.store(true, std::memory_order_release);
+        }
 
-            originalInputProcessor(self, queueHead);
-
-            remappedEvent->strUserEvent = originalUserEvent;
-            remappedEvent->disabled = originalDisabled;
+        if (confirmEvent) {
+            ProcessAsConfirm(self, confirmEvent, queueHead);
+            ResetScrapState();
         } else {
             originalInputProcessor(self, queueHead);
         }
@@ -234,7 +409,34 @@ namespace
         workbenchScrapConfirmation.store(
             isScrap,
             std::memory_order_release);
+        pendingWorkbenchRewards.clear();
+        if (isScrap && Settings::Get().showMaterials) {
+            const auto* scrapData = static_cast<
+                RE::ExamineConfirmMenu::InitDataScrap*>(data);
+            pendingWorkbenchRewards = CopyRewards(scrapData->scrapResults);
+        }
+
         originalShowConfirmMenu(menu, data, callback);
+    }
+
+    void ScrapItemAccept(RE::ScrapItemCallback* callback)
+    {
+        auto rewards = std::exchange(
+            pendingWorkbenchRewards,
+            std::vector<Reward>{});
+        originalScrapItemAccept(callback);
+        ShowMaterialSummary(rewards);
+    }
+
+    void ScrapReference(
+        const RE::Workshop::ContextData& context,
+        WorkshopReference& scrapReference,
+        ScrapRewards* rewards)
+    {
+        originalScrapReference(context, scrapReference, rewards);
+        if (rewards && Settings::Get().showMaterials) {
+            ShowMaterialSummary(CopyRewards(*rewards));
+        }
     }
 
     bool InstallUIInputHook()
@@ -248,6 +450,59 @@ namespace
                     kPerformInputProcessingIndex,
                     &UIPerformInputProcessing));
         return originalInputProcessor != nullptr;
+    }
+
+    bool InstallConfirmAdvanceMovieHook()
+    {
+        REL::Relocation<std::uintptr_t> confirmMenuVtable{
+            RE::VTABLE::ExamineConfirmMenu[0]
+        };
+        originalConfirmAdvanceMovie =
+            reinterpret_cast<ConfirmAdvanceMovieHandler>(
+                confirmMenuVtable.write_vfunc(
+                    kConfirmAdvanceMovieIndex,
+                    &ConfirmAdvanceMovie));
+        return originalConfirmAdvanceMovie != nullptr;
+    }
+
+    bool InstallScrapItemAcceptHook()
+    {
+        REL::Relocation<std::uintptr_t> scrapItemVtable{
+            RE::VTABLE::__ScrapItemCallback[0]
+        };
+        originalScrapItemAccept =
+            reinterpret_cast<ScrapItemAcceptHandler>(
+                scrapItemVtable.write_vfunc(
+                    kScrapItemAcceptIndex,
+                    &ScrapItemAccept));
+        return originalScrapItemAccept != nullptr;
+    }
+
+    bool InstallScrapReferenceHook()
+    {
+        REL::Relocation<std::uintptr_t> target{
+            RuntimeID(636327, 2195125, 2195125)
+        };
+        scrapReferenceTarget = reinterpret_cast<void*>(target.address());
+        if (MH_CreateHook(
+                scrapReferenceTarget,
+                reinterpret_cast<void*>(&ScrapReference),
+                reinterpret_cast<void**>(&originalScrapReference)) !=
+            MH_OK) {
+            scrapReferenceTarget = nullptr;
+            spdlog::error(
+                "Could not create the Workshop::ScrapReference hook");
+            return false;
+        }
+        if (MH_EnableHook(scrapReferenceTarget) != MH_OK) {
+            MH_RemoveHook(scrapReferenceTarget);
+            scrapReferenceTarget = nullptr;
+            originalScrapReference = nullptr;
+            spdlog::error(
+                "Could not enable the Workshop::ScrapReference hook");
+            return false;
+        }
+        return originalScrapReference != nullptr;
     }
 
     bool InstallShowConfirmHook()
@@ -294,6 +549,16 @@ namespace
             originalShowConfirmMenu = nullptr;
         }
     }
+
+    void RemoveScrapReferenceHook()
+    {
+        if (scrapReferenceTarget) {
+            MH_DisableHook(scrapReferenceTarget);
+            MH_RemoveHook(scrapReferenceTarget);
+            scrapReferenceTarget = nullptr;
+            originalScrapReference = nullptr;
+        }
+    }
 }
 
 bool Hooks::Install()
@@ -308,14 +573,31 @@ bool Hooks::Install()
     if (!InstallShowConfirmHook()) {
         return false;
     }
+    if (!InstallScrapReferenceHook()) {
+        RemoveShowConfirmHook();
+        return false;
+    }
+    if (!InstallScrapItemAcceptHook()) {
+        RemoveScrapReferenceHook();
+        RemoveShowConfirmHook();
+        spdlog::error("Could not install the scrap item accept hook");
+        return false;
+    }
+    if (!InstallConfirmAdvanceMovieHook()) {
+        RemoveScrapReferenceHook();
+        RemoveShowConfirmHook();
+        spdlog::error(
+            "Could not install the confirmation movie hook");
+        return false;
+    }
     if (!InstallUIInputHook()) {
+        RemoveScrapReferenceHook();
         RemoveShowConfirmHook();
         spdlog::error("Could not install the UI input hook");
         return false;
     }
 
     spdlog::info(
-        "Installed UI input hooks for workshop and workbench "
-        "scrapping");
+        "Installed workshop and workbench scrap hooks");
     return true;
 }
